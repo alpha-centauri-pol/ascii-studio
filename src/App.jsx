@@ -209,7 +209,7 @@ export default function App() {
     sizeVariation: true,
     minSize: 6,
     maxSize: 14,
-    density: 0.5,       
+    density: 0.95,       
     asciiSet: 'Standard',
     zoom: 100,
     paletteName: 'Matrix', 
@@ -274,7 +274,24 @@ export default function App() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     
-    if (!video || !canvas || video.paused || video.ended) return;
+    // Safety check - components must be mounted
+    if (!video || !canvas) return;
+
+    // Check video state (ended = stop)
+    if (video.ended) {
+        setIsPlaying(false);
+        return;
+    }
+    
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    // If dimensions are 0, video isn't ready. 
+    // CRITICAL FIX: Retry loop instead of dying.
+    if (w === 0 || h === 0) {
+        animationRef.current = requestAnimationFrame(processFrame);
+        return;
+    }
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const { colors, bg } = COLOR_PALETTES[config.paletteName];
@@ -282,11 +299,6 @@ export default function App() {
     // Low density = larger steps (faster)
     const stepSize = Math.max(4, Math.floor(20 * (1 - config.density) + 4)); 
     
-    const w = video.videoWidth;
-    const h = video.videoHeight;
-    
-    if (w === 0 || h === 0) return;
-
     // Scale Logic
     const MAX_PROC_WIDTH = 640; 
     let scale = 1;
@@ -436,17 +448,24 @@ export default function App() {
       <video ref={videoRef} playsInline loop muted className="hidden" onPlay={() => setIsPlaying(true)} />
 
       {/* --- Sidebar (Control Deck) --- */}
-      <div className="w-full lg:w-96 bg-black border-r border-zinc-800 flex flex-col h-full z-20 overflow-y-auto custom-scrollbar">
+      {/* LAYOUT LOGIC:
+          Mobile: order-2 (appears at bottom), h-full (scrollable)
+          Desktop: order-1 (appears at left), w-96 (fixed width)
+      */}
+      <div className="order-2 lg:order-1 flex-1 lg:flex-none w-full lg:w-96 bg-black border-t lg:border-t-0 lg:border-r border-zinc-800 flex flex-col h-full z-20 overflow-y-auto custom-scrollbar">
         
         {/* Brand Header */}
         <div className="p-8 pb-6 border-b border-zinc-900">
           <div className="flex items-center gap-3 mb-3">
+             <div className="w-8 h-8 bg-white flex items-center justify-center">
+                <Settings className="text-black" size={20} strokeWidth={3} />
+             </div>
              <h1 className="text-3xl font-['Instrument_Serif'] uppercase text-white leading-none pt-1 tracking-wide">ASCII<span className="text-zinc-600">.STUDIO</span></h1>
           </div>
           <p className="text-zinc-500 text-xs font-['Inter'] font-bold uppercase tracking-[0.2em] mt-2">Realtime Synthesis Engine</p>
         </div>
 
-        <div className="flex-1 p-6 space-y-6">
+        <div className="flex-1 p-6 space-y-6 pb-20 lg:pb-6">
             
             {/* 1. Input Source */}
             <CredCard title="Input Feed">
@@ -570,7 +589,11 @@ export default function App() {
       </div>
 
       {/* --- Main Viewport --- */}
-      <div className="flex-1 bg-black relative overflow-hidden flex items-center justify-center p-8 lg:p-12">
+      {/* LAYOUT LOGIC:
+          Mobile: order-1 (appears at top), h-[40vh] (fixed 40% height)
+          Desktop: order-2 (appears at right), h-auto (flexes to fill)
+      */}
+      <div className="order-1 lg:order-2 h-[40vh] lg:h-auto lg:flex-1 bg-black relative overflow-hidden flex items-center justify-center p-2 lg:p-12 border-b lg:border-b-0 border-zinc-800">
         
         {/* Background Grid for technical feel */}
         <div className="absolute inset-0 pointer-events-none opacity-10" 
@@ -582,12 +605,11 @@ export default function App() {
         
         {/* Placeholder */}
         {!videoSrc && mode !== 'webcam' && (
-             <div className="z-10 flex flex-col items-center justify-center text-zinc-600 border border-zinc-800 p-12 bg-zinc-900/50 backdrop-blur-sm max-w-md text-center">
-                 <Monitor size={64} strokeWidth={1} className="mb-6 opacity-50" />
-                 <h3 className="text-3xl font-['Instrument_Serif'] uppercase text-zinc-300 mb-2 tracking-wide">No Signal</h3>
-                 <p className
-                 ="text-xs font-['Inter'] font-bold uppercase tracking-widest text-zinc-500 mb-8">Initialize Source to Begin Synthesis</p>
-                 <CredButton onClick={() => fileInputRef.current.click()} className="min-w-[200px]">UPLOAD FOOTAGE</CredButton>
+             <div className="z-10 flex flex-col items-center justify-center text-zinc-600 border border-zinc-800 p-6 lg:p-12 bg-zinc-900/50 backdrop-blur-sm max-w-md text-center">
+                 <Monitor size={48} lg:size={64} strokeWidth={1} className="mb-4 lg:mb-6 opacity-50" />
+                 <h3 className="text-xl lg:text-3xl font-['Instrument_Serif'] uppercase text-zinc-300 mb-2 tracking-wide">No Signal</h3>
+                 <p className="text-xs font-['Inter'] font-bold uppercase tracking-widest text-zinc-500 mb-6 lg:mb-8">Initialize Source to Begin Synthesis</p>
+                 <CredButton onClick={() => fileInputRef.current.click()} className="min-w-[160px] lg:min-w-[200px]">UPLOAD FOOTAGE</CredButton>
              </div>
         )}
 
@@ -600,19 +622,19 @@ export default function App() {
                 boxShadow: '0 0 100px -20px rgba(0,0,0,0.8)'
             }}
         >
-            <canvas ref={canvasRef} className="block" />
+            <canvas ref={canvasRef} className="block max-w-full max-h-full" />
         </div>
 
         {/* Metadata Overlay */}
         {(videoSrc || mode === 'webcam') && (
-            <div className="absolute top-6 right-6 flex flex-col items-end gap-1 pointer-events-none">
+            <div className="absolute top-4 right-4 lg:top-6 lg:right-6 flex flex-col items-end gap-1 pointer-events-none">
                 <div className="flex items-center gap-2">
                     {isRecording && <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />}
                     <span className="text-xs font-bold text-zinc-500 tracking-widest uppercase">
                         {isRecording ? 'REC' : 'LIVE'} // {config.shapeType}
                     </span>
                 </div>
-                <div className="text-xs font-mono text-zinc-700 uppercase">
+                <div className="text-[10px] lg:text-xs font-mono text-zinc-700 uppercase">
                     REZ: {Math.round(config.density * 100)}% / PALETTE: {config.paletteName.toUpperCase()}
                 </div>
             </div>
