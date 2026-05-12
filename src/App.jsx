@@ -13,8 +13,17 @@ import {
   Grid,
   Type,
   Maximize2,
-  ChevronDown
+  ChevronDown,
+  Image as ImageIcon,
+  Sparkles
 } from 'lucide-react';
+
+const DEMO_IMAGES = [
+  { id: 1, url: 'https://images.unsplash.com/photo-1550684848-fac1c5b4e853?w=800&q=80', label: 'Cyberpunk' },
+  { id: 2, url: 'https://images.unsplash.com/photo-1531297172864-45d1b5590390?w=800&q=80', label: 'Tech' },
+  { id: 3, url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=800&q=80', label: 'Space' },
+  { id: 4, url: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80', label: 'Abstract' }
+];
 
 // --- Constants & Config ---
 
@@ -189,12 +198,14 @@ const CredSelect = ({ value, onChange, options, label }) => (
 export default function App() {
   // State
   const [videoSrc, setVideoSrc] = useState(null);
-  const [mode, setMode] = useState('video'); 
+  const [imageSrc, setImageSrc] = useState(null);
+  const [mode, setMode] = useState('video'); // 'video', 'webcam', 'image'
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   
   // Refs
   const videoRef = useRef(null);
+  const imageRef = useRef(null);
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -204,12 +215,16 @@ export default function App() {
 
   // Config
   const [config, setConfig] = useState({
-    shapeType: 'ASCII', 
+    shapeType: 'ASCII', // ASCII, Dots, Braille, Lego, Pixel, Mosaic, 3D
     baseSize: 10,       
     sizeVariation: true,
     minSize: 6,
     maxSize: 14,
-    density: 0.95,       
+    density: 0.95,
+    coverage: 85,
+    edgeEmphasis: 60,
+    brightness: 0,
+    contrast: 0,
     asciiSet: 'Standard',
     zoom: 100,
     paletteName: 'Matrix', 
@@ -227,18 +242,29 @@ export default function App() {
   const handleVideoUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (videoSrc) URL.revokeObjectURL(videoSrc);
-      stopWebcam();
-      
+      const isVideo = file.type.startsWith('video/');
       const url = URL.createObjectURL(file);
-      setVideoSrc(url);
-      setMode('video');
-      setIsPlaying(true);
-      
-      if (videoRef.current) {
-        videoRef.current.src = url;
-        videoRef.current.load();
-        videoRef.current.play().catch(e => console.log("Auto-play prevented", e));
+
+      stopWebcam();
+      if (videoSrc) URL.revokeObjectURL(videoSrc);
+      if (imageSrc) URL.revokeObjectURL(imageSrc);
+
+      if (isVideo) {
+        setVideoSrc(url);
+        setImageSrc(null);
+        setMode('video');
+        setIsPlaying(true);
+        if (videoRef.current) {
+          videoRef.current.src = url;
+          videoRef.current.load();
+          videoRef.current.play().catch(e => console.log("Auto-play prevented", e));
+        }
+      } else {
+        setImageSrc(url);
+        setVideoSrc(null);
+        setMode('image');
+        setIsPlaying(false);
+        // We will process the frame once the image loads
       }
     }
   };
@@ -272,26 +298,39 @@ export default function App() {
   // Render Loop
   const processFrame = useCallback(() => {
     const video = videoRef.current;
+    const image = imageRef.current;
     const canvas = canvasRef.current;
     
-    // Safety check - components must be mounted
-    if (!video || !canvas) return;
+    if (!canvas) return;
 
-    // Check video state (ended = stop)
-    if (video.ended) {
+    let source = null;
+    let w = 0;
+    let h = 0;
+
+    if (mode === 'video' || mode === 'webcam') {
+      if (!video) return;
+      if (mode === 'video' && video.ended) {
         setIsPlaying(false);
         return;
-    }
-    
-    const w = video.videoWidth;
-    const h = video.videoHeight;
-
-    // If dimensions are 0, video isn't ready. 
-    // CRITICAL FIX: Retry loop instead of dying.
-    if (w === 0 || h === 0) {
+      }
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
         animationRef.current = requestAnimationFrame(processFrame);
         return;
+      }
+      source = video;
+      w = video.videoWidth;
+      h = video.videoHeight;
+    } else if (mode === 'image') {
+      if (!image || !image.complete || image.naturalWidth === 0) {
+        animationRef.current = requestAnimationFrame(processFrame);
+        return;
+      }
+      source = image;
+      w = image.naturalWidth;
+      h = image.naturalHeight;
     }
+
+    if (!source) return;
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const { colors, bg } = COLOR_PALETTES[config.paletteName];
@@ -309,14 +348,40 @@ export default function App() {
         canvas.height = h * scale;
     }
 
-    // Capture Frame
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = canvas.width;
     tempCanvas.height = canvas.height;
-    const tempCtx = tempCanvas.getContext('2d');
-    tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+    tempCtx.drawImage(source, 0, 0, tempCanvas.width, tempCanvas.height);
     const imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
     const pixels = imgData.data;
+
+    // Edge Detection Map (Sobel)
+    const edgeData = new Float32Array(canvas.width * canvas.height);
+    if (config.edgeEmphasis > 0) {
+      const gray = new Float32Array(canvas.width * canvas.height);
+      for (let i = 0; i < canvas.width * canvas.height; i++) {
+        const idx = i * 4;
+        gray[i] = 0.299 * pixels[idx] + 0.587 * pixels[idx + 1] + 0.114 * pixels[idx + 2];
+      }
+      let maxEdge = 0;
+      for (let y = 1; y < canvas.height - 1; y++) {
+        for (let x = 1; x < canvas.width - 1; x++) {
+          const idx = y * canvas.width + x;
+          const gx = -gray[(y-1)*canvas.width + (x-1)] + gray[(y-1)*canvas.width + (x+1)]
+                     -2*gray[y*canvas.width + (x-1)] + 2*gray[y*canvas.width + (x+1)]
+                     -gray[(y+1)*canvas.width + (x-1)] + gray[(y+1)*canvas.width + (x+1)];
+          const gy = -gray[(y-1)*canvas.width + (x-1)] - 2*gray[(y-1)*canvas.width + x] - gray[(y-1)*canvas.width + (x+1)]
+                     +gray[(y+1)*canvas.width + (x-1)] + 2*gray[(y+1)*canvas.width + x] + gray[(y+1)*canvas.width + (x+1)];
+          const mag = Math.sqrt(gx * gx + gy * gy);
+          edgeData[idx] = mag;
+          if (mag > maxEdge) maxEdge = mag;
+        }
+      }
+      if (maxEdge > 0) {
+        for (let i = 0; i < edgeData.length; i++) edgeData[i] /= maxEdge;
+      }
+    }
 
     // Draw
     ctx.fillStyle = bg;
@@ -334,22 +399,41 @@ export default function App() {
         const b = pixels[pixelIndex + 2];
         
         const lum = getLuminance(r, g, b);
-        const color = getColorForLuminance(lum, colors);
+        
+        // Coverage & Edge Logic
+        const edgeVal = edgeData[Math.floor(y) * canvas.width + Math.floor(x)] || 0;
+        const edgeBoost = Math.pow(edgeVal, 0.4) * (config.edgeEmphasis / 100);
+        const normLum = lum / 255;
+        const visibility = Math.min(1, normLum + edgeBoost);
+        const threshold = 1 - (config.coverage / 100);
+        
+        if (visibility < threshold) continue;
 
+        // Apply Brightness/Contrast to Color
+        const contrastFactor = (259 * (config.contrast + 255)) / (255 * (259 - config.contrast));
+        const adjR = Math.max(0, Math.min(255, contrastFactor * (r - 128) + 128 + (config.brightness / 100) * 255));
+        const adjG = Math.max(0, Math.min(255, contrastFactor * (g - 128) + 128 + (config.brightness / 100) * 255));
+        const adjB = Math.max(0, Math.min(255, contrastFactor * (b - 128) + 128 + (config.brightness / 100) * 255));
+        const adjLum = getLuminance(adjR, adjG, adjB);
+
+        const color = getColorForLuminance(adjLum, colors);
         ctx.fillStyle = color;
 
-        if (config.shapeType === 'ASCII') {
-            let charIndex = Math.floor((lum / 255) * (charLen - 1));
+        if (config.shapeType === 'ASCII' || config.shapeType === 'Blocks') {
+            let activeSet = charSet;
+            if (config.shapeType === 'Blocks') activeSet = ' ░▒▓█';
+            const len = activeSet.length;
+            let charIndex = Math.floor((adjLum / 255) * (len - 1));
             if(charIndex < 0) charIndex = 0;
-            if(charIndex >= charLen) charIndex = charLen - 1;
+            if(charIndex >= len) charIndex = len - 1;
 
-            const char = charSet[charIndex];
+            const char = activeSet[charIndex];
             if (char === ' ') continue;
 
             let fontSize = config.baseSize;
             if (config.sizeVariation) {
                 const sizeRange = config.maxSize - config.minSize;
-                const sizeOffset = (lum / 255) * sizeRange;
+                const sizeOffset = (adjLum / 255) * sizeRange;
                 fontSize = config.minSize + sizeOffset;
             }
 
@@ -361,10 +445,48 @@ export default function App() {
         } else if (config.shapeType === 'Dots') {
             const maxRadius = stepSize / 2;
             let radius = maxRadius * 0.8;
-            if (config.sizeVariation) radius = (lum / 255) * maxRadius;
+            if (config.sizeVariation) radius = (adjLum / 255) * maxRadius;
             
             ctx.beginPath();
-            ctx.arc(x + stepSize/2, y + stepSize/2, Math.max(0, radius), 0, Math.PI * 2);
+            ctx.arc(x + stepSize/2, y + stepSize/2, Math.max(0.5, radius), 0, Math.PI * 2);
+            ctx.fill();
+        } else if (config.shapeType === 'Braille') {
+            let brailleCode = 0;
+            const bitMap = [0, 1, 2, 6, 3, 4, 5, 7];
+            for (let dc = 0; dc < 2; dc++) {
+              for (let dr = 0; dr < 4; dr++) {
+                const subX = Math.floor(x + (dc + 0.5) * (stepSize / 2));
+                const subY = Math.floor(y + (dr + 0.5) * (stepSize / 4));
+                if (subX >= canvas.width || subY >= canvas.height) continue;
+                const pi = (subY * canvas.width + subX) * 4;
+                const sl = getLuminance(pixels[pi], pixels[pi+1], pixels[pi+2]);
+                if ((sl / 255) > 0.45) brailleCode |= (1 << bitMap[dc * 4 + dr]);
+              }
+            }
+            if (brailleCode !== 0) {
+              const char = String.fromCharCode(0x2800 + brailleCode);
+              ctx.font = `${config.baseSize}px monospace`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(char, x + stepSize/2, y + stepSize/2);
+            }
+        } else if (config.shapeType === 'Pixel') {
+            const inset = 0.5;
+            const size = stepSize - inset * 2;
+            ctx.fillRect(x + inset, y + inset, size, size);
+        } else if (config.shapeType === 'Lego') {
+            const size = stepSize;
+            ctx.fillRect(x, y, size, size);
+            
+            ctx.fillStyle = `rgba(0,0,0,0.25)`;
+            ctx.beginPath();
+            ctx.arc(x + size/2 + size*0.04, y + size/2 + size*0.06, size*0.35, 0, Math.PI * 2);
+            ctx.fill();
+
+            const c1 = hexToRgb(color);
+            ctx.fillStyle = `rgb(${Math.min(255, c1.r+20)}, ${Math.min(255, c1.g+20)}, ${Math.min(255, c1.b+20)})`;
+            ctx.beginPath();
+            ctx.arc(x + size/2, y + size/2, size*0.35, 0, Math.PI * 2);
             ctx.fill();
         }
       }
@@ -446,6 +568,9 @@ export default function App() {
 
       {/* Hidden Video Source */}
       <video ref={videoRef} playsInline loop muted className="hidden" onPlay={() => setIsPlaying(true)} />
+      <img ref={imageRef} crossOrigin="anonymous" className="hidden" onLoad={() => {
+         if (mode === 'image') processFrame();
+      }} />
 
       {/* --- Sidebar (Control Deck) --- */}
       {/* LAYOUT LOGIC:
@@ -467,6 +592,33 @@ export default function App() {
 
         <div className="flex-1 p-6 space-y-6 pb-20 lg:pb-6">
             
+            {/* 0. Demos */}
+            <CredCard title="Reference Archives" rightAction={<Sparkles size={14} className="text-zinc-500" />}>
+               <div className="grid grid-cols-2 gap-2">
+                 {DEMO_IMAGES.map((demo) => (
+                   <button
+                     key={demo.id}
+                     onClick={() => {
+                        stopWebcam();
+                        if (videoSrc) URL.revokeObjectURL(videoSrc);
+                        setImageSrc(demo.url);
+                        setVideoSrc(null);
+                        setMode('image');
+                        setIsPlaying(false);
+                        if (imageRef.current) {
+                           imageRef.current.src = demo.url;
+                        }
+                     }}
+                     className="relative group h-20 overflow-hidden border border-zinc-800 hover:border-zinc-500 transition-colors"
+                   >
+                     <img src={demo.url} alt={demo.label} className="w-full h-full object-cover opacity-50 group-hover:opacity-100 transition-opacity" />
+                     <div className="absolute inset-0 bg-black/40 group-hover:bg-transparent transition-colors" />
+                     <span className="absolute bottom-1 left-2 text-[10px] font-bold uppercase tracking-widest text-white shadow-sm">{demo.label}</span>
+                   </button>
+                 ))}
+               </div>
+            </CredCard>
+
             {/* 1. Input Source */}
             <CredCard title="Input Feed">
                <div className="grid grid-cols-2 gap-3">
@@ -487,7 +639,7 @@ export default function App() {
                     CAMERA
                   </CredButton>
                </div>
-               <input type="file" ref={fileInputRef} onChange={handleVideoUpload} className="hidden" accept="video/*" />
+               <input type="file" ref={fileInputRef} onChange={handleVideoUpload} className="hidden" accept="video/*,image/*" />
                
                {/* Transport Controls */}
                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-zinc-800">
@@ -511,24 +663,14 @@ export default function App() {
 
             {/* 2. Visual Style */}
             <CredCard title="Visual Syntax">
-               <div className="grid grid-cols-2 gap-3 mb-4">
-                   <button 
-                      onClick={() => setConfig({...config, shapeType: 'ASCII'})}
-                      className={`h-24 border flex flex-col items-center justify-center gap-2 transition-all ${config.shapeType === 'ASCII' ? 'bg-white text-black border-white' : 'bg-black text-zinc-500 border-zinc-800 hover:border-zinc-600'}`}
-                   >
-                      <Type size={24} />
-                      <span className="text-xs font-['Inter'] font-bold tracking-widest uppercase">Char</span>
-                   </button>
-                   <button 
-                      onClick={() => setConfig({...config, shapeType: 'Dots'})}
-                      className={`h-24 border flex flex-col items-center justify-center gap-2 transition-all ${config.shapeType === 'Dots' ? 'bg-white text-black border-white' : 'bg-black text-zinc-500 border-zinc-800 hover:border-zinc-600'}`}
-                   >
-                      <Grid size={24} />
-                      <span className="text-xs font-['Inter'] font-bold tracking-widest uppercase">Dot</span>
-                   </button>
-               </div>
+               <CredSelect 
+                  label="Morphology Options"
+                  value={config.shapeType} 
+                  onChange={(e) => setConfig({...config, shapeType: e.target.value})}
+                  options={['ASCII', 'Blocks', 'Dots', 'Braille', 'Pixel', 'Lego']}
+               />
 
-               {config.shapeType === 'ASCII' && (
+               {(config.shapeType === 'ASCII' || config.shapeType === 'Blocks') && (
                  <CredSelect 
                     label="Character Set"
                     value={config.asciiSet} 
@@ -547,6 +689,10 @@ export default function App() {
                <div className="space-y-6 pt-2">
                  <CredSlider label="Resolution Density" value={config.density} min={0.1} max={0.95} onChange={(v)=>setConfig({...config, density: v})} />
                  <CredSlider label="Base Element Size" value={config.baseSize} min={4} max={40} suffix="px" onChange={(v)=>setConfig({...config, baseSize: v})} />
+                 <CredSlider label="Signal Density" value={config.coverage} min={10} max={100} suffix="%" onChange={(v)=>setConfig({...config, coverage: v})} />
+                 <CredSlider label="Outline Extraction" value={config.edgeEmphasis} min={0} max={100} suffix="%" onChange={(v)=>setConfig({...config, edgeEmphasis: v})} />
+                 <CredSlider label="Exposure" value={config.brightness} min={-100} max={100} onChange={(v)=>setConfig({...config, brightness: v})} />
+                 <CredSlider label="Dynamic Range" value={config.contrast} min={-100} max={100} onChange={(v)=>setConfig({...config, contrast: v})} />
                  
                  <div className="flex items-center justify-between py-1">
                      <span className="text-xs font-['Inter'] font-bold text-zinc-500 uppercase tracking-wider">Luminance Scaling</span>
